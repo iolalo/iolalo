@@ -22,7 +22,7 @@ MAP_BOX = (30, 76, 460, 476)  # x0, y0, x1, y1
 INFO_BOX = (490, 76, 970, 476)
 DOT_TARGET = 6000
 GROUP_SIZE_RANGE = (8, 20)
-LOOP_MIN_DUR, LOOP_MAX_DUR = 9.0, 17.0
+LOOP_MIN_DUR, LOOP_MAX_DUR = 3.0, 6.0
 
 FIELDS = [
     ("Subject", "Alejandro"),
@@ -143,8 +143,8 @@ def render_dot_groups(groups, accent, seed, dot_size):
         d = "".join(f"M{x:.1f} {y:.1f}h{dot_size}" for x, y in g)
         dur = rng.uniform(LOOP_MIN_DUR, LOOP_MAX_DUR)
         begin = rng.uniform(0, dur)
-        dip_start = rng.uniform(0.15, 0.45)
-        dip_end = rng.uniform(dip_start + 0.15, 0.85)
+        dip_start = rng.uniform(0.15, 0.55)
+        dip_end = rng.uniform(dip_start + 0.08, min(dip_start + 0.3, 0.95))
         base_op = rng.uniform(0.75, 0.95)
         jx = rng.uniform(-6, 6)
         jy = rng.uniform(-6, 6)
