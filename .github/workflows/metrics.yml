@@ -1,0 +1,47 @@
+name: Metrics
+
+on:
+  schedule:
+    - cron: "0 */6 * * *"
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  metrics:
+    runs-on: ubuntu-latest
+    steps:
+      # ------------------------------------------------------------------ #
+      # Core stats card (stars, commits, followers, activity)
+      # METRICS_TOKEN is a classic PAT with `read:user` + `repo` scopes,
+      # set as a repo secret -- the built-in GITHUB_TOKEN can't read
+      # cross-repo contribution data.
+      # ------------------------------------------------------------------ #
+      - name: Stats card
+        uses: lowlighter/metrics@latest
+        with:
+          token: ${{ secrets.METRICS_TOKEN }}
+          user: iolalo
+          filename: assets/metrics.svg
+          base: header, activity, community, repositories
+          config_timezone: America/Argentina/Buenos_Aires
+
+      # ------------------------------------------------------------------ #
+      # Language breakdown (bytes-weighted)
+      # ------------------------------------------------------------------ #
+      - name: Languages
+        uses: lowlighter/metrics@latest
+        with:
+          token: ${{ secrets.METRICS_TOKEN }}
+          user: iolalo
+          filename: assets/metrics.languages.svg
+          base: ""
+          config_timezone: America/Argentina/Buenos_Aires
+          plugin_languages: yes
+          plugin_languages_details: bytes-size, percentage
+          plugin_languages_limit: 8
+          plugin_languages_indepth: no
+          plugin_languages_sections: most-used

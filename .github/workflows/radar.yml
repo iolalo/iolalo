@@ -1,0 +1,38 @@
+name: Skill radar
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "assets/skills.json"
+      - "scripts/radar.py"
+      - ".github/workflows/radar.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  radar:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      # Edit assets/skills.json to change the chart, this workflow redraws it
+      - name: Generate skill radar
+        run: python scripts/radar.py --data assets/skills.json -o assets/radar
+
+      - name: Commit changes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add assets/radar-dark.svg assets/radar-light.svg
+          git diff --staged --quiet || git commit -m "chore: regenerate skill radar"
+          git push
