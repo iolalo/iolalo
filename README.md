@@ -1,8 +1,17 @@
 <div align="center">
 
+<table>
+<tr>
+<td width="140" align="center" valign="middle">
+<img src="assets/avatar.png" width="120" height="120" alt="Alejandro">
+</td>
+<td align="center" valign="middle">
 <a href="https://github.com/iolalo">
-  <img src="https://readme-typing-svg.demolab.com?font=JetBrains+Mono&weight=600&size=24&duration=2600&pause=900&color=F2C811&center=true&vCenter=true&width=760&lines=Alejandro+P%C3%A9rez+-+BI+Developer;Power+BI+%2F+DAX+%2F+Data+Modeling;Automating+workflows+with+Python+%26+n8n" alt="typing banner">
+  <img src="https://readme-typing-svg.demolab.com?font=JetBrains+Mono&weight=600&size=24&duration=2600&pause=900&color=F2C811&center=true&vCenter=true&width=620&lines=Alejandro+P%C3%A9rez+-+BI+Developer;Power+BI+%2F+DAX+%2F+Data+Modeling;Automating+workflows+with+Python+%26+n8n" alt="typing banner">
 </a>
+</td>
+</tr>
+</table>
 
 <br>
 
