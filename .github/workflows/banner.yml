@@ -1,0 +1,40 @@
+name: Terminal banner
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "assets/avatar.png"
+      - "scripts/build_terminal_banner.py"
+      - ".github/workflows/banner.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  banner:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      # Edit assets/avatar.png to change the portrait, this workflow redraws it
+      - name: Generate terminal banner
+        run: |
+          python scripts/build_terminal_banner.py --photo assets/avatar.png \
+            --out-dark assets/banner-dark.svg --out-light assets/banner-light.svg
+
+      - name: Commit changes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add assets/banner-dark.svg assets/banner-light.svg
+          git diff --staged --quiet || git commit -m "chore: regenerate terminal banner"
+          git push
