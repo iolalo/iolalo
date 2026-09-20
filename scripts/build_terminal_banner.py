@@ -1,235 +1,265 @@
 #!/usr/bin/env python3
-"""Generate an animated 'profile.sh --live' terminal banner SVG (dark + light).
+"""Generate the profile README hero banner (dark + light SVG).
 
-Dithers a photo to 1-bit, scatters the dark pixels into randomized clusters,
-and animates each cluster with its own SMIL opacity dip + jitter -- so the
-portrait continuously, unevenly reassembles and partially dissolves, forever,
-with no JavaScript. Paired with a SYSTEM.INFO panel of real profile fields.
+Mirrors the "whoami.md" hero card from the alejandro-perez portfolio
+(https://github.com/iolalo/portfolio) -- same file-tree sidebar, tab bar,
+`~$ whoami` prompt and pill badges -- so the GitHub profile and the
+portfolio site read as the same product.
 
 Usage:
-    python scripts/build_terminal_banner.py --photo assets/avatar-square.png \
+    python scripts/build_terminal_banner.py --photo assets/avatar.png \
         --out-dark assets/banner-dark.svg --out-light assets/banner-light.svg
 """
 import argparse
-import random
+import base64
+import io
+import textwrap
 
-import cv2
-import numpy as np
 from PIL import Image
 
-CANVAS_W, CANVAS_H = 1000, 520
-MAP_BOX = (30, 76, 460, 476)  # x0, y0, x1, y1
-INFO_BOX = (490, 76, 970, 476)
-DOT_TARGET = 6000
-GROUP_SIZE_RANGE = (8, 20)
-LOOP_MIN_DUR, LOOP_MAX_DUR = 3.0, 6.0
+CANVAS_W, CANVAS_H = 1000, 420
+TITLEBAR_H = 40
+STATUSBAR_H = 26
+SIDEBAR_W = 200
+PAD = 26
+AVATAR_SIZE = 108
 
-FIELDS = [
-    ("Subject", "Alejandro"),
-    ("Role", "BI Developer"),
-    ("Origin", "Buenos Aires, AR"),
-    ("Stack", "Power BI · DAX · Python"),
-    ("Automation", "n8n"),
-    ("Grid.Mail", "alejandro.fussion@gmail.com"),
-    ("Grid.LinkedIn", "/in/alejandroperez-data"),
-    ("Grid.GitHub", "iolalo"),
+SIDEBAR_TREE = [
+    ("◆", "whoami.md", True),       # ◆
+    ("▸", "experiencia/", False),   # ▸
+    ("{ }", "skills.json", False),
+    ("⇢", "proyectos.link", False),  # ⇢
+    ("◆", "educacion.md", False),
+    ("$", "contacto.sh", False),
 ]
+BUILD_ITEM = ("↓", "CV_Alejandro_Perez.pdf")  # ↓
+
+ROLE_LINE = "Senior BI Analyst · Power BI Developer · Data Modeling & Governance"
+LEDE = (
+    "Power BI ecosystem owner end-to-end — semantic modeling, "
+    "advanced DAX, dynamic RLS, governance & CI/CD with Git."
+)
+BADGES = ["\U0001F4CD Buenos Aires, AR", "Star Schema", "Dynamic RLS", "Tabular Editor", "CI/CD + Git"]
+
+MONO = "ui-monospace,SFMono-Regular,Consolas,monospace"
+SANS = "ui-sans-serif,-apple-system,Segoe UI,Roboto,sans-serif"
 
 THEMES = {
     "dark": {
-        "outer": "#0A101F",
-        "panel": "#0D1628",
-        "inner_panel": "#101B30",
-        "border": "#25344C",
-        "text_dim": "#8291A8",
-        "text_bright": "#E7ECF3",
-        "accent": "#38BDF8",
-        "accent_dim_opacity": ".16",
+        "bg": "#10141c",
+        "panel": "#171d29",
+        "panel2": "#1d2432",
+        "sidebar": "#0d1119",
+        "border": "#2a3242",
+        "border_soft": "#212838",
+        "text": "#e9e8e3",
+        "text_dim": "#9aa4b8",
+        "text_faint": "#5c6478",
+        "gold": "#f2c811",
+        "gold_dim": "#a6903f",
+        "teal": "#01b8aa",
+        "teal_dim": "#4fada6",
+        "dot": "#3a4256",
     },
     "light": {
-        "outer": "#F3F6FB",
-        "panel": "#FFFFFF",
-        "inner_panel": "#F8FAFD",
-        "border": "#D7E0EC",
-        "text_dim": "#5B6B84",
-        "text_bright": "#0F1A2B",
-        "accent": "#0284C7",
-        "accent_dim_opacity": ".12",
+        "bg": "#f4f5f8",
+        "panel": "#ffffff",
+        "panel2": "#eef1f6",
+        "sidebar": "#eaecf1",
+        "border": "#d7dce6",
+        "border_soft": "#e2e6ee",
+        "text": "#1b2130",
+        "text_dim": "#4b5468",
+        "text_faint": "#838ca0",
+        "gold": "#9c7a0a",
+        "gold_dim": "#8a6b1f",
+        "teal": "#027a70",
+        "teal_dim": "#0a8f83",
+        "dot": "#c7cddb",
     },
 }
 
-FONT = "ui-monospace,SFMono-Regular,Consolas,monospace"
+
+def esc(s):
+    return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
-def build_dots(photo_path, box, seed):
-    x0, y0, x1, y1 = box
-    pad = 12
-    w, h = (x1 - x0 - 2 * pad), (y1 - y0 - 2 * pad)
-
-    src = Image.open(photo_path).convert("RGBA")
-    # crop to the box's aspect ratio before resizing, so the portrait isn't stretched
-    src_w, src_h = src.size
-    target_ratio = w / h
-    src_ratio = src_w / src_h
-    if src_ratio > target_ratio:
-        new_w = int(src_h * target_ratio)
-        left = (src_w - new_w) // 2
-        src = src.crop((left, 0, left + new_w, src_h))
-    else:
-        new_h = int(src_w / target_ratio)
-        top = (src_h - new_h) // 2
-        src = src.crop((0, top, src_w, top + new_h))
-
-    # flatten onto white first, so any transparent area (e.g. outside a circular
-    # crop) contributes no dots instead of reading as black background
-    flattened = Image.new("RGBA", src.size, (255, 255, 255, 255))
-    flattened.alpha_composite(src)
-
-    # CLAHE (local contrast) instead of a single global levels adjustment --
-    # a photo lit unevenly (bright on one side, deep shadow on the other, e.g.
-    # a single stage light) would otherwise dither to a blown-out blob on one
-    # side and a solid shadow mass on the other, with no facial structure.
-    gray_arr = np.array(flattened.convert("L"))
-    clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
-    gray = Image.fromarray(clahe.apply(gray_arr))
-
-    # Calibrate at a moderate resolution, then solve for the grid size that
-    # lands close to DOT_TARGET dark pixels -- dithering directly at that
-    # resolution (rather than dithering fine and randomly dropping dots) is
-    # what keeps facial detail legible; random subsampling washes it out.
-    calib_w = 150
-    calib_h = max(1, int(calib_w * h / w))
-    calib = gray.resize((calib_w, calib_h), Image.LANCZOS).convert("1", dither=Image.FLOYDSTEINBERG)
-    calib_px = calib.load()
-    dark_ratio = sum(1 for py in range(calib_h) for px in range(calib_w) if calib_px[px, py] == 0) / (
-        calib_w * calib_h
-    )
-    dark_ratio = max(dark_ratio, 0.05)
-
-    target_total = DOT_TARGET / dark_ratio
-    grid_w = max(1, int((target_total * w / h) ** 0.5))
-    grid_h = max(1, int(grid_w * h / w))
-
-    gray = gray.resize((grid_w, grid_h), Image.LANCZOS)
-    bitmap = gray.convert("1", dither=Image.FLOYDSTEINBERG)
-    pixels = bitmap.load()
-
-    raw_dots = [(px, py) for py in range(grid_h) for px in range(grid_w) if pixels[px, py] == 0]
-
-    sx, sy = w / grid_w, h / grid_h
-    dots = [(x0 + pad + px * sx, y0 + pad + py * sy) for px, py in raw_dots]
-    # size each drawn dot to roughly fill its grid cell, so adjacent "on" cells
-    # visually merge into dithered tone instead of reading as scattered specks
-    dot_size = max(1, round((sx + sy) / 2 * 1.15))
-    return dots, grid_w, grid_h, dot_size
+def wrap(text, width):
+    return textwrap.wrap(text, width=width) or [""]
 
 
-def group_dots(dots, seed):
-    rng = random.Random(seed + 1)
-    rng.shuffle(dots)
-    groups = []
-    i = 0
-    while i < len(dots):
-        n = rng.randint(*GROUP_SIZE_RANGE)
-        groups.append(dots[i : i + n])
-        i += n
-    return groups
+def load_avatar_b64(photo_path):
+    im = Image.open(photo_path).convert("RGB")
+    w, h = im.size
+    side = min(w, h)
+    x0, y0 = (w - side) // 2, (h - side) // 2
+    im = im.crop((x0, y0, x0 + side, y0 + side)).resize((AVATAR_SIZE * 2, AVATAR_SIZE * 2), Image.LANCZOS)
+    buf = io.BytesIO()
+    im.save(buf, format="JPEG", quality=82)
+    return base64.b64encode(buf.getvalue()).decode("ascii")
 
 
-def render_dot_groups(groups, accent, seed, dot_size):
-    rng = random.Random(seed + 2)
+def text_width(s, font_size, mono):
+    return len(s) * font_size * (0.605 if mono else 0.52)
+
+
+def badge_row(badges, x0, y_top, max_w, t):
+    """Lay pill badges left-to-right, wrapping to a new row when out of width."""
     out = []
-    for g in groups:
-        d = "".join(f"M{x:.1f} {y:.1f}h{dot_size}" for x, y in g)
-        dur = rng.uniform(LOOP_MIN_DUR, LOOP_MAX_DUR)
-        begin = rng.uniform(0, dur)
-        dip_start = rng.uniform(0.15, 0.55)
-        dip_end = rng.uniform(dip_start + 0.08, min(dip_start + 0.3, 0.95))
-        base_op = rng.uniform(0.75, 0.95)
-        jx = rng.uniform(-6, 6)
-        jy = rng.uniform(-6, 6)
-        j_at = rng.uniform(0.3, 0.6)
-        opacity_vals = f"{base_op:.2f};{base_op:.2f};0;0;0;0;{base_op:.2f}"
-        opacity_times = f"0;{dip_start:.2f};{min(dip_start+0.06,0.99):.2f};{((dip_start+dip_end)/2):.2f};{max(dip_end-0.06,dip_start+0.01):.2f};{dip_end:.2f};1"
-        translate_vals = f"0 0;0 0;{jx:.1f} {jy:.1f};0 0;0 0"
-        translate_times = f"0;{max(j_at-0.08,0):.2f};{j_at:.2f};{min(j_at+0.08,1):.2f};1"
+    x, y = x0, y_top
+    row_h = 30
+    pad_x = 10
+    gap = 8
+    for label in badges:
+        w = text_width(label, 11.5, True) + pad_x * 2
+        if x != x0 and x + w > x0 + max_w:
+            x = x0
+            y += row_h
         out.append(
-            f'<path d="{d}" fill="none" stroke="{accent}" stroke-width="{dot_size}" opacity="{base_op:.2f}">'
-            f'<animate attributeName="opacity" begin="-{begin:.2f}s" dur="{dur:.2f}s" repeatCount="indefinite" '
-            f'keyTimes="{opacity_times}" values="{opacity_vals}"/>'
-            f'<animateTransform attributeName="transform" type="translate" begin="-{begin:.2f}s" dur="{dur:.2f}s" '
-            f'repeatCount="indefinite" calcMode="linear" keyTimes="{translate_times}" values="{translate_vals}"/>'
-            f"</path>"
+            f'<rect x="{x:.1f}" y="{y:.1f}" width="{w:.1f}" height="22" rx="11" '
+            f'fill="{t["teal"]}" fill-opacity="0.08" stroke="{t["border"]}"/>'
+            f'<text x="{x + w / 2:.1f}" y="{y + 15}" text-anchor="middle" fill="{t["teal_dim"]}" '
+            f'font-family="{MONO}" font-size="11.5">{esc(label)}</text>'
         )
-    return "".join(out)
+        x += w + gap
+    return "".join(out), y + row_h
 
 
-def corner_brackets(box, accent):
-    x0, y0, x1, y1 = box
-    n = 12
-    return (
-        f'<path d="M{x0} {y0+n}h{n}M{x0} {y0+n}v-{n}'
-        f"M{x1} {y0+n}h-{n}M{x1} {y0+n}v-{n}"
-        f"M{x0} {y1-n}h{n}M{x0} {y1-n}v{n}"
-        f'M{x1} {y1-n}h-{n}M{x1} {y1-n}v{n}" fill="none" stroke="{accent}" opacity=".55"/>'
+def build_svg(theme_name, avatar_b64):
+    t = THEMES[theme_name]
+
+    # ---- title bar --------------------------------------------------- #
+    dots = "".join(f'<circle cx="{24 + i * 18}" cy="20" r="5.5" fill="{t["dot"]}"/>' for i in range(3))
+    titlebar = f'''<rect width="{CANVAS_W}" height="{TITLEBAR_H}" fill="{t["sidebar"]}"/>
+<path d="M0 {TITLEBAR_H}H{CANVAS_W}" stroke="{t["border"]}"/>
+{dots}
+<text x="66" y="25" font-family="{MONO}" font-size="12.5" fill="{t["text_faint"]}">
+<tspan fill="{t["text_dim"]}" font-weight="600">alejandro-perez</tspan> — github · whoami.md</text>
+<rect x="{CANVAS_W - 300}" y="9" width="150" height="22" rx="4" fill="none" stroke="{t["border"]}"/>
+<text x="{CANVAS_W - 225}" y="24" text-anchor="middle" font-family="{MONO}" font-size="12" fill="{t["text_dim"]}">in/alejandroperez-data</text>
+<rect x="{CANVAS_W - 142}" y="9" width="118" height="22" rx="4" fill="none" stroke="{t["border"]}"/>
+<text x="{CANVAS_W - 83}" y="24" text-anchor="middle" font-family="{MONO}" font-size="12" fill="{t["text_dim"]}">portfolio ↗</text>'''
+
+    # ---- sidebar ------------------------------------------------------- #
+    sb_items = []
+    row_y = TITLEBAR_H + 26 + 18
+    sb_items.append(
+        f'<text x="18" y="{TITLEBAR_H + 26}" font-family="{MONO}" font-size="10.5" letter-spacing="1" '
+        f'fill="{t["text_faint"]}">~/ALEJANDRO-PEREZ</text>'
+    )
+    for glyph, label, active in SIDEBAR_TREE:
+        color = t["gold"] if active else t["text_dim"]
+        bar = f'<rect x="0" y="{row_y - 15}" width="2" height="22" fill="{t["gold"]}"/>' if active else ""
+        fill = f'fill="{t["gold"]}" fill-opacity="0.06"' if active else ""
+        if active:
+            sb_items.append(f'<rect x="0" y="{row_y - 15}" width="{SIDEBAR_W}" height="22" {fill}/>')
+        sb_items.append(bar)
+        sb_items.append(
+            f'<text x="18" y="{row_y}" font-family="{MONO}" font-size="13" fill="{t["text_faint"]}">{esc(glyph)}</text>'
+            f'<text x="40" y="{row_y}" font-family="{MONO}" font-size="13" fill="{color}">{esc(label)}</text>'
+        )
+        row_y += 27
+    row_y += 12
+    sb_items.append(
+        f'<text x="18" y="{row_y}" font-family="{MONO}" font-size="10.5" letter-spacing="1" '
+        f'fill="{t["text_faint"]}">BUILD</text>'
+    )
+    row_y += 24
+    glyph, label = BUILD_ITEM
+    sb_items.append(
+        f'<text x="18" y="{row_y}" font-family="{MONO}" font-size="13" fill="{t["text_faint"]}">{esc(glyph)}</text>'
+        f'<text x="40" y="{row_y}" font-family="{MONO}" font-size="13" fill="{t["text_dim"]}">{esc(label)}</text>'
     )
 
+    sidebar = f'''<rect x="0" y="{TITLEBAR_H}" width="{SIDEBAR_W}" height="{CANVAS_H - TITLEBAR_H - STATUSBAR_H}" fill="{t["sidebar"]}"/>
+<path d="M{SIDEBAR_W} {TITLEBAR_H}V{CANVAS_H - STATUSBAR_H}" stroke="{t["border"]}"/>
+{"".join(sb_items)}'''
 
-def build_svg(theme_name, dots, grid_w, grid_h, dot_size, seed):
-    t = THEMES[theme_name]
-    groups = group_dots(list(dots), seed)
-    dot_markup = render_dot_groups(groups, t["accent"], seed, dot_size)
+    # ---- main: file tab + file body ------------------------------------ #
+    tab_x = SIDEBAR_W + PAD
+    tab_y = TITLEBAR_H + 18
+    tab_w = 118
+    body_x = SIDEBAR_W + PAD
+    body_y = tab_y + 22
+    body_w = CANVAS_W - body_x - PAD
+    body_h = CANVAS_H - STATUSBAR_H - body_y - PAD
 
-    mx0, my0, mx1, my1 = MAP_BOX
-    ix0, iy0, ix1, iy1 = INFO_BOX
+    file_tab = (
+        f'<rect x="{tab_x}" y="{tab_y}" width="{tab_w}" height="22" rx="6" fill="{t["panel2"]}" stroke="{t["border"]}"/>'
+        f'<text x="{tab_x + 12}" y="{tab_y + 15}" font-family="{MONO}" font-size="12" fill="{t["text_faint"]}">◆ whoami.md</text>'
+    )
 
-    fields_svg = []
-    row_y = iy0 + 60
-    for label, value in FIELDS:
-        fields_svg.append(
-            f'<text x="{ix0+18}" y="{row_y}" fill="{t["text_dim"]}" font-family="{FONT}" font-size="14">{label}</text>'
-            f'<text x="{ix1-18}" y="{row_y}" text-anchor="end" fill="{t["accent"]}" font-family="{FONT}" '
-            f'font-size="14" font-weight="600">{value}</text>'
+    file_body_bg = (
+        f'<rect x="{body_x}" y="{body_y}" width="{body_w}" height="{body_h}" rx="8" fill="{t["panel"]}" stroke="{t["border"]}"/>'
+    )
+
+    av_x, av_y = body_x + 28, body_y + 28
+    clip_id = f"avatar-clip-{theme_name}"
+    avatar = (
+        f'<defs><clipPath id="{clip_id}"><rect x="{av_x}" y="{av_y}" width="{AVATAR_SIZE}" height="{AVATAR_SIZE}" rx="12"/></clipPath></defs>'
+        f'<image href="data:image/jpeg;base64,{avatar_b64}" x="{av_x}" y="{av_y}" width="{AVATAR_SIZE}" height="{AVATAR_SIZE}" '
+        f'preserveAspectRatio="xMidYMid slice" clip-path="url(#{clip_id})"/>'
+        f'<rect x="{av_x}" y="{av_y}" width="{AVATAR_SIZE}" height="{AVATAR_SIZE}" rx="12" fill="none" stroke="{t["border"]}"/>'
+    )
+
+    col_x = av_x + AVATAR_SIZE + 26
+    col_w = body_x + body_w - PAD - col_x
+
+    parts = []
+    y = av_y + 14
+    parts.append(
+        f'<text x="{col_x}" y="{y}" font-family="{MONO}" font-size="13" fill="{t["text_faint"]}">'
+        f'<tspan fill="{t["teal"]}">~$</tspan> whoami</text>'
+    )
+    y += 32
+    parts.append(
+        f'<text x="{col_x}" y="{y}" font-family="{MONO}" font-size="27" font-weight="700" fill="{t["text"]}">Alejandro Perez'
+        f'<tspan fill="{t["gold"]}">'
+        f'<animate attributeName="opacity" values="1;1;0;0;1" keyTimes="0;0.45;0.5;0.95;1" dur="1.1s" repeatCount="indefinite"/>'
+        f" █</tspan></text>"
+    )
+    y += 30
+    role_lines = wrap(ROLE_LINE, max(20, int(col_w / (15 * 0.605))))
+    for line in role_lines:
+        parts.append(
+            f'<text x="{col_x}" y="{y}" font-family="{MONO}" font-size="15" font-weight="600" fill="{t["gold"]}">{esc(line)}</text>'
         )
-        row_y += 34
+        y += 21
+    y += 6
+    lede_lines = wrap(LEDE, max(20, int(col_w / (14 * 0.52))))[:2]
+    for line in lede_lines:
+        parts.append(
+            f'<text x="{col_x}" y="{y}" font-family="{SANS}" font-size="14" fill="{t["text_dim"]}">{esc(line)}</text>'
+        )
+        y += 20
+    y += 10
+    badges_svg, y_after = badge_row(BADGES, col_x, y, col_w, t)
+    parts.append(badges_svg)
 
-    status_y = iy1 - 24
-    svg = f'''<svg xmlns="http://www.w3.org/2000/svg" width="{CANVAS_W}" height="{CANVAS_H}" viewBox="0 0 {CANVAS_W} {CANVAS_H}" role="img" aria-labelledby="title desc">
-<title id="title">Alejandro's live system profile</title>
-<desc id="desc">Animated terminal banner with a dithered portrait that continuously reassembles.</desc>
-<defs>
-<clipPath id="mapClip-{theme_name}"><rect x="{mx0}" y="{my0}" width="{mx1-mx0}" height="{my1-my0}" rx="4"/></clipPath>
-</defs>
-<rect width="{CANVAS_W}" height="{CANVAS_H}" rx="18" fill="{t['outer']}"/>
-<rect x="12" y="12" width="{CANVAS_W-24}" height="{CANVAS_H-24}" rx="13" fill="{t['panel']}" stroke="{t['border']}"/>
-<path d="M12 54H{CANVAS_W-12}" stroke="{t['border']}"/>
-<circle cx="36" cy="33" r="6" fill="#FF5F57"/>
-<circle cx="57" cy="33" r="6" fill="#FEBC2E"/>
-<circle cx="78" cy="33" r="6" fill="#28C840"/>
-<text x="{CANVAS_W/2}" y="38" text-anchor="middle" fill="{t['text_dim']}" font-family="{FONT}" font-size="13" letter-spacing=".4">whoami --live</text>
+    main = file_tab + file_body_bg + avatar + "".join(parts)
 
-<rect x="{mx0}" y="{my0}" width="{mx1-mx0}" height="{my1-my0}" rx="6" fill="{t['inner_panel']}" stroke="{t['border']}"/>
-<path d="M{mx0} {my0+36}H{mx1}" stroke="{t['border']}"/>
-<text x="{mx0+14}" y="{my0+24}" fill="{t['accent']}" font-family="{FONT}" font-size="13" font-weight="700" letter-spacing="1.2">VISUAL.MAP</text>
-<text x="{mx1-14}" y="{my0+24}" text-anchor="end" fill="{t['text_dim']}" font-family="{FONT}" font-size="11">{grid_w}×{grid_h} / 1-BIT</text>
-{corner_brackets((mx0+14, my0+52, mx1-14, my1-14), t['accent'])}
-<g clip-path="url(#mapClip-{theme_name})" shape-rendering="crispEdges">
-{dot_markup}
+    # ---- status bar ----------------------------------------------------- #
+    sy = CANVAS_H - STATUSBAR_H
+    statusbar = f'''<rect x="0" y="{sy}" width="{CANVAS_W}" height="{STATUSBAR_H}" fill="{t["teal"]}"/>
+<circle cx="18" cy="{sy + STATUSBAR_H / 2}" r="3.5" fill="{t["sidebar"] if theme_name == "dark" else "#06201d"}"/>
+<text x="30" y="{sy + STATUSBAR_H / 2 + 4}" font-family="{MONO}" font-size="11.5" fill="{"#06201d" if theme_name == "light" else "#06201d"}">available — remote / hybrid</text>
+<text x="270" y="{sy + STATUSBAR_H / 2 + 4}" font-family="{MONO}" font-size="11.5" fill="#06201d">Buenos Aires, AR</text>
+<text x="440" y="{sy + STATUSBAR_H / 2 + 4}" font-family="{MONO}" font-size="11.5" fill="#06201d">UTF-8</text>
+<text x="520" y="{sy + STATUSBAR_H / 2 + 4}" font-family="{MONO}" font-size="11.5" fill="#06201d">main</text>'''
+
+    return f'''<svg xmlns="http://www.w3.org/2000/svg" width="{CANVAS_W}" height="{CANVAS_H}" viewBox="0 0 {CANVAS_W} {CANVAS_H}" role="img" aria-labelledby="title desc">
+<title id="title">Alejandro Perez — whoami.md</title>
+<desc id="desc">GitHub profile hero styled like the alejandro-perez portfolio: file tree sidebar, whoami.md tab, prompt and skill badges.</desc>
+<rect width="{CANVAS_W}" height="{CANVAS_H}" rx="14" fill="{t["bg"]}"/>
+<clipPath id="frame-{theme_name}"><rect width="{CANVAS_W}" height="{CANVAS_H}" rx="14"/></clipPath>
+<g clip-path="url(#frame-{theme_name})">
+{titlebar}
+{sidebar}
+{main}
+{statusbar}
 </g>
-
-<rect x="{ix0}" y="{iy0}" width="{ix1-ix0}" height="{iy1-iy0}" rx="6" fill="{t['inner_panel']}" stroke="{t['border']}"/>
-<path d="M{ix0} {iy0+36}H{ix1}" stroke="{t['border']}"/>
-<text x="{ix0+14}" y="{iy0+24}" fill="{t['accent']}" font-family="{FONT}" font-size="13" font-weight="700" letter-spacing="1.2">SYSTEM.INFO</text>
-<g filter="none"><circle cx="{ix1-166}" cy="{iy0+19}" r="4" fill="#22C55E"><animate attributeName="opacity" values="1;.3;1" dur="1.6s" repeatCount="indefinite"/></circle></g>
-<text x="{ix1-156}" y="{iy0+24}" fill="#22C55E" font-family="{FONT}" font-size="12" font-weight="700">LIVE</text>
-<rect x="{ix1-118}" y="{iy0+6}" width="118" height="20" rx="10" fill="{t['accent']}" opacity="{t['accent_dim_opacity']}" stroke="{t['accent']}"/>
-<text x="{ix1-59}" y="{iy0+20}" text-anchor="middle" fill="{t['accent']}" font-family="{FONT}" font-size="11" font-weight="700">@iolalo</text>
-{''.join(fields_svg)}
-<path d="M{ix0} {status_y-16}H{ix1}" stroke="{t['border']}"/>
-<circle cx="{ix0+16}" cy="{status_y}" r="3" fill="{t['accent']}"><animate attributeName="opacity" values="1;.25;1" dur="2.2s" repeatCount="indefinite"/></circle>
-<text x="{ix0+28}" y="{status_y+4}" fill="{t['text_dim']}" font-family="{FONT}" font-size="11" letter-spacing=".4">STATUS: MODEL REFRESHED · 0 ERRORS</text>
+<rect x="0.5" y="0.5" width="{CANVAS_W - 1}" height="{CANVAS_H - 1}" rx="14" fill="none" stroke="{t["border"]}"/>
 </svg>'''
-    return svg
 
 
 def main():
@@ -237,16 +267,15 @@ def main():
     parser.add_argument("--photo", required=True)
     parser.add_argument("--out-dark", required=True)
     parser.add_argument("--out-light", required=True)
-    parser.add_argument("--seed", type=int, default=7)
     args = parser.parse_args()
 
-    dots, grid_w, grid_h, dot_size = build_dots(args.photo, MAP_BOX, args.seed)
+    avatar_b64 = load_avatar_b64(args.photo)
 
     for theme_name, out_path in (("dark", args.out_dark), ("light", args.out_light)):
-        svg = build_svg(theme_name, dots, grid_w, grid_h, dot_size, args.seed)
+        svg = build_svg(theme_name, avatar_b64)
         with open(out_path, "w", encoding="utf-8") as f:
             f.write(svg)
-        print(f"wrote {out_path} ({len(svg)/1024:.0f} KB, {len(dots)} dots)")
+        print(f"wrote {out_path} ({len(svg) / 1024:.0f} KB)")
 
 
 if __name__ == "__main__":
